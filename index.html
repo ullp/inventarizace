@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>IQ-Čtečka – Inventura majetku</title>
+<meta name="description" content="Mobilní HTML čtečka QR kódů pro inventuru majetku + generování a tisk štítků. Funguje offline v terénu." />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0f172a" />
+<link rel="stylesheet" href="styles.css" />
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">IQ</div>
+    <div>
+      <h1>IQ-Čtečka</h1>
+      <p>Inventura majetku • mobilní čtečka QR</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div id="progressMini" class="progress-mini">0 / 0</div>
+    <button id="btnInstall" class="btn ghost hidden">Instalovat</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="seznam" role="tab">📋 Seznam</button>
+  <button class="tab" data-tab="stitky" role="tab">🏷️ Štítky</button>
+  <button class="tab highlight" data-tab="inventura" role="tab">📱 Inventura</button>
+</nav>
+
+<div class="progress-wrap">
+  <div class="progress-info">
+    <span id="progressText">Nenahrán žádný seznam</span>
+    <span id="progressPct">0%</span>
+  </div>
+  <div class="progress"><div id="progressBar" style="width:0%"></div></div>
+</div>
+
+<main>
+  <!-- SEZNAM -->
+  <section id="tab-seznam" class="panel active">
+    <div class="card">
+      <h2>1. Seznam majetku (export z účetnictví)</h2>
+      <p class="muted">Načtěte CSV / Excel export. Aplikace každý řádek rozpadne podle <b>počtu</b> na jednotlivé kusy a každému kusu přidělí unikátní inventární kód + QR.</p>
+      <div class="row wrap">
+        <label class="btn">📂 Nahrát CSV
+          <input type="file" id="fileCsv" accept=".csv,.txt" hidden />
+        </label>
+        <button id="btnDemo" class="btn secondary">📄 Načíst ukázková data</button>
+        <button id="btnGenerate" class="btn primary">⚙️ Vygenerovat kódy</button>
+        <button id="btnClear" class="btn danger-ghost">🗑️ Smazat</button>
+      </div>
+      <div class="row wrap">
+        <label>Prefix kódu <input id="inpPrefix" value="IQ" maxlength="6" /></label>
+        <label class="check"><input type="checkbox" id="chkKeepCodes" checked /> Zachovat již přidělené kódy</label>
+      </div>
+      <details>
+        <summary>Očekávaný formát CSV</summary>
+        <pre>Inventář majetku,počet,délka let umořování majetku,inventární kód majetku
+stůl,3,1,
+židle,5,1,
+auto,2,5,
+tiskárna,5,2,</pre>
+        <p class="muted">První řádek je hlavička. Oddělovač čárka nebo středník. Kódování UTF-8. Prázdný inventární kód = vygeneruje se.</p>
+      </details>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <input id="search" placeholder="🔍 Hledat (název / kód)…" />
+        <select id="filterStatus">
+          <option value="all">Vše</option>
+          <option value="pending">⏳ Nenalezeno</option>
+          <option value="found">✅ Nalezeno</option>
+        </select>
+        <button id="btnExportCsv" class="btn secondary">⬇️ Export výsledku CSV</button>
+        <button id="btnExportJson" class="btn secondary">⬇️ Záloha JSON</button>
+        <label class="btn secondary">⬆️ Obnova JSON <input type="file" id="fileJson" accept=".json" hidden /></label>
+      </div>
+      <div id="tableWrap" class="table-wrap">
+        <table>
+          <thead><tr><th>Kód (QR)</th><th>Název</th><th>Skupina</th><th>Stav</th><th>Čas</th><th>Akce</th></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <p id="emptyMsg" class="muted center">Zatím žádná data. Nahrajte CSV nebo klikněte na „Načíst ukázková data“.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- STITKY -->
+  <section id="tab-stitky" class="panel">
+    <div class="card">
+      <h2>2. Tisk štítků – 2× pro každý kus</h2>
+      <p class="muted">Pro každý kus se tisknou <b>2 identické štítky se stejným QR kódem</b>: <span class="tag tag-list">SEZNAM – do papírového seznamu</span> <span class="tag tag-asset">MAJETEK – nalepit na majetek</span>. V terénu stačí naskenovat kterýkoliv z nich – spáruje se s položkou.</p>
+      <div class="row wrap">
+        <label>Velikost štítku
+          <select id="selLabelSize">
+            <option value="medium">Střední (62×40 mm, 4 na řádek)</option>
+            <option value="large">Velký (80×50 mm, 2 na řádek)</option>
+            <option value="small">Malý (40×30 mm, 6 na řádek)</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="chkOnlyPending" /> Tisknout jen nenalezené</label>
+        <button id="btnPrint" class="btn primary">🖨️ Tisknout štítky</button>
+      </div>
+    </div>
+    <div id="labelsPreview" class="labels-preview"></div>
+    <div id="printArea" class="print-area"></div>
+  </section>
+
+  <!-- INVENTURA -->
+  <section id="tab-inventura" class="panel">
+    <div class="card scan-card">
+      <h2>3. Terénní validace mobilem</h2>
+      <ol class="steps">
+        <li>Otevřete tuto stránku v mobilu (HTTPS nebo localhost).</li>
+        <li>Klikněte <b>„Zapnout kameru“</b> a namiřte na QR štítek (na majetku <i>nebo</i> v seznamu).</li>
+        <li>Aplikace kus okamžitě spáruje, označí ✅ a uloží čas – funguje i offline.</li>
+      </ol>
+      <div class="row wrap">
+        <button id="btnStartScan" class="btn primary big">📷 Zapnout kameru</button>
+        <button id="btnStopScan" class="btn secondary" disabled>⏹️ Vypnout</button>
+        <button id="btnFlip" class="btn ghost" disabled>🔄 Přepnout kameru</button>
+      </div>
+      <div id="reader" class="reader"></div>
+      <p id="scanHint" class="muted center">Kamera vyžaduje HTTPS (nebo localhost) a povolení přístupu. Na PC použijte ruční zadání níže.</p>
+      <div class="manual-box">
+        <label>Ruční zadání / Bluetooth skener</label>
+        <div class="row">
+          <input id="manualCode" placeholder="např. IQ-0007" autocomplete="off" inputmode="text" />
+          <button id="btnManual" class="btn primary">✔️ Potvrdit</button>
+        </div>
+      </div>
+      <div id="lastScan" class="last-scan hidden"></div>
+      <div class="stats-grid">
+        <div class="stat"><b id="statTotal">0</b><span>celkem kusů</span></div>
+        <div class="stat ok"><b id="statFound">0</b><span>nalezeno</span></div>
+        <div class="stat warn"><b id="statPending">0</b><span>zbývá</span></div>
+      </div>
+      <div class="row wrap">
+        <button id="btnUndo" class="btn secondary">↩️ Vrátit poslední sken</button>
+        <button id="btnResetScan" class="btn danger-ghost">Resetovat inventuru</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Poslední skeny</h3>
+      <ul id="history" class="history"></ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>IQ-Čtečka • 100% offline po načtení • data se ukládají v telefonu (localStorage)</span>
+  <button id="btnHelp" class="btn ghost small">Jak to funguje?</button>
+</footer>
+
+<dialog id="dlgHelp">
+  <h3>Jak funguje párování štítků?</h3>
+  <p><b>Účetní:</b> nahraje export majetku → aplikace vygeneruje unikátní kód pro každý <i>kus</i> (počet se rozpadne, např. židle ×5 → 5 kódů). Vytiskne 2 stejné štítky: jeden do papírového seznamu, druhý na majetek.</p>
+  <p><b>Terén:</b> pracovník mobilem skenuje QR na majetku. Aplikace kód vyhledá v seznamu, označí jako nalezený + čas. Lze skenovat i štítek v seznamu (kontrola).</p>
+  <p><b>Neznámý / duplicitní kód:</b> aplikace upozorní zvukem a hláškou, ale inventuru nezastaví.</p>
+  <p><b>Offline:</b> po prvním načtení funguje bez internetu. Na konci vyexportujte CSV a předejte účetní.</p>
+  <button class="btn primary" onclick="document.getElementById('dlgHelp').close()">Rozumím</button>
+</dialog>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+let deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;document.getElementById('btnInstall').classList.remove('hidden');});
+document.getElementById('btnInstall').addEventListener('click',async()=>{if(deferredPrompt){deferredPrompt.prompt();deferredPrompt=null;}});
+</script>
+</body>
+</html>

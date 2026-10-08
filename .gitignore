@@ -1,0 +1,14 @@
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+node_modules/
