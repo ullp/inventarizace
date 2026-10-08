@@ -1,21 +1,53 @@
-/* IQ-Čtečka – logika: CSV -> kusy -> QR kódy -> skenování -> persist */
+/* IQ-Čtečka – logika: CSV -> kusy -> QR kódy -> skenování -> persist
+   Data jsou oddělená podle firmy (companyId); přístup a oprávnění řídí Auth. */
 'use strict';
-const LS_KEY = 'iq-ctecka-v1';
-let state = { items: [], lastId: 0, history: [], updatedAt: null };
+const LS_PREFIX = 'iq-ctecka-v1';           // klíč dat jedné firmy: iq-ctecka-v1:<companyId>
+const emptyState = () => ({ items: [], lastId: 0, history: [], labelSets: [], updatedAt: null });
+let state = emptyState();
 let lastScannedId = null;
+let openSetId = null;            // která uložená sada štítků je právě otevřená k ověření
 let html5Qr = null, cameras = [], camIndex = 0, scanning = false;
+let setQr = null, setScanning = false;   // samostatný skener pro ověřování sad (záložka Štítky)
 
-// ---------- persistence ----------
-function save() { state.updatedAt = new Date().toISOString(); try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch(e){} render(); }
-function load() { try { const raw = localStorage.getItem(LS_KEY); if (raw) { const s = JSON.parse(raw); if (s && Array.isArray(s.items)) state = s; } } catch(e){} }
+// ---------- persistence (odděleně podle firmy) ----------
+function lsKey(companyId) { return `${LS_PREFIX}:${companyId}`; }
+function activeCompanyId() { return Auth.company(); }
+function save() {
+  const cid = activeCompanyId(); if (!cid) return;
+  state.updatedAt = new Date().toISOString();
+  try { localStorage.setItem(lsKey(cid), JSON.stringify(state)); } catch(e){}
+  render();
+}
+function readState(cid) {
+  try { const raw = localStorage.getItem(lsKey(cid)); if (raw) { const s = JSON.parse(raw); if (s && Array.isArray(s.items)) return normalizeState(s); } } catch(e){}
+  return null;
+}
+/* Doplní chybějící části stavu (starší uložená data bez labelSets apod.). */
+function normalizeState(s) {
+  if (!s || typeof s !== 'object' || !Array.isArray(s.items)) return null;
+  s.lastId = Number(s.lastId) || 0;
+  if (!Array.isArray(s.history)) s.history = [];
+  if (!Array.isArray(s.labelSets)) s.labelSets = [];
+  s.labelSets = s.labelSets.map(normalizeSet).filter(Boolean);
+  return s;
+}
+/* Načte data aktivní firmy; při prvním přihlášení je naplní ukázkovými daty. */
+function load() {
+  const cid = activeCompanyId(); if (!cid) { state = emptyState(); return; }
+  const stored = readState(cid);
+  state = stored || normalizeState(demoSeedState(cid)) || emptyState();
+  if (!stored) { try { localStorage.setItem(lsKey(cid), JSON.stringify(state)); } catch(e){} }
+}
 
 // ---------- helpers ----------
 const $ = id => document.getElementById(id);
 function toast(msg, ok=true){ const t=$('toast'); t.textContent=msg; t.className='toast show '+(ok?'ok':'err'); setTimeout(()=>t.className='toast',2600); }
 function beep(ok=true){ try{ const ctx=new (window.AudioContext||window.webkitAudioContext)(); const o=ctx.createOscillator(), g=ctx.createGain(); o.connect(g); g.connect(ctx.destination); o.frequency.value=ok?880:220; o.type=ok?'sine':'sawtooth'; g.gain.value=0.15; o.start(); setTimeout(()=>{o.stop();ctx.close();}, ok?150:400);}catch(e){} if(navigator.vibrate) navigator.vibrate(ok?50:[80,60,80]); }
 function norm(s){ return (s||'').toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+/* Vrátí true a ohlásí chybu, pokud je uživatel v režimu čtení (host). */
+function denyIfReadOnly(){ if (Auth.isGuest()) { toast('Režim čtení – úpravy nejsou povoleny', false); return true; } return false; }
 function pad(n,l=4){ return String(n).padStart(l,'0'); }
-function uid(){ return 'u'+(++state.lastId)+'-'+Date.now().toString(36); }
+function uid(prefix='u'){ return prefix+(++state.lastId)+'-'+Date.now().toString(36); }
 
 // ---------- CSV parsing ----------
 function detectDelim(line){ const c=(line.match(/;/g)||[]).length, k=(line.match(/,/g)||[]).length; return c>k?';':','; }
@@ -49,6 +81,7 @@ function nextCode(prefix){
   return `${prefix}-${pad(max+1)}`;
 }
 function generateFromRows(rows){
+  if (denyIfReadOnly()) return;
   const prefix=($('inpPrefix').value||'IQ').toUpperCase().replace(/[^A-Z0-9]/g,'')||'IQ';
   const keep=$('chkKeepCodes').checked;
   if(!keep){ state.items=[]; state.history=[]; }
@@ -110,10 +143,13 @@ function render(){
     const tr=document.createElement('tr');
     tr.innerHTML=`<td><b class="mono">${escapeHtml(it.code)}</b></td><td>${escapeHtml(it.name)} <span class="muted">#${it.idx}</span></td><td class="muted">${escapeHtml(it.group||'')} ${it.years?`· ${escapeHtml(it.years)}r`:''}</td><td>${it.status==='found'?'<span class="pill ok">✅ Nalezeno</span>':'<span class="pill">⏳ Čeká</span>'}</td><td class="muted small">${it.foundAt?new Date(it.foundAt).toLocaleString('cs-CZ'):''}</td>`;
     const td=document.createElement('td');
-    const b=document.createElement('button'); b.className='btn small secondary'; b.textContent=it.status==='found'?'↩️':'✔️';
-    b.title=it.status==='found'?'Vrátit':'Označit ručně';
-    b.onclick=()=>{ toggleItem(it.id); };
-    td.appendChild(b); tr.appendChild(td); frag.appendChild(tr);
+    if(Auth.canEdit()){
+      const b=document.createElement('button'); b.className='btn small secondary'; b.textContent=it.status==='found'?'↩️':'✔️';
+      b.title=it.status==='found'?'Vrátit':'Označit ručně';
+      b.onclick=()=>{ toggleItem(it.id); };
+      td.appendChild(b);
+    }
+    tr.appendChild(td); frag.appendChild(tr);
   });
   tb.appendChild(frag);
   if(rows.length>500) toast('Zobrazeno prvních 500 řádků, použijte filtr/hledání', true);
@@ -126,9 +162,10 @@ function render(){
     h.appendChild(li);
   });
   renderLabelsPreview();
+  renderLabelSets();
 }
-function escapeHtml(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function toggleItem(id){ const it=state.items.find(i=>i.id===id); if(!it)return;
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toggleItem(id){ if (denyIfReadOnly()) return; const it=state.items.find(i=>i.id===id); if(!it)return;
   if(it.status==='found'){ it.status='pending'; it.foundAt=null; } else { it.status='found'; it.foundAt=new Date().toISOString(); lastScannedId=id; }
   save();
 }
@@ -165,9 +202,151 @@ function doPrint(){
   window.print();
 }
 
+// ---------- sady štítků (uložení, znovuotevření, ověření) ----------
+const LABEL_SIZE_NAMES = { small: 'Malý (40×30 mm)', medium: 'Střední (62×40 mm)', large: 'Velký (80×50 mm)' };
+function labelSizeName(v){ return LABEL_SIZE_NAMES[v] || LABEL_SIZE_NAMES.medium; }
+
+/* Zvaliduje a sjednotí jednu sadu (např. z importovaného JSON). */
+function normalizeSet(s){
+  if (!s || typeof s !== 'object' || !Array.isArray(s.codes)) return null;
+  const codes = s.codes.filter(c => c && c.code).map(c => ({
+    code: String(c.code).trim(),
+    name: String(c.name || ''),
+    idx: Number(c.idx) || 1,
+    group: String(c.group || ''),
+    years: String(c.years || ''),
+    status: c.status === 'validated' ? 'validated' : 'pending',
+    validatedAt: c.validatedAt || null
+  })).filter(c => c.code);
+  if (!codes.length) return null;
+  const now = new Date().toISOString();
+  return {
+    id: String(s.id || ('s' + Date.now())),
+    name: String(s.name || 'Sada').slice(0, 80),
+    createdAt: s.createdAt || now,
+    updatedAt: s.updatedAt || now,
+    labelSize: LABEL_SIZE_NAMES[s.labelSize] ? s.labelSize : 'medium',
+    codes
+  };
+}
+function currentSet(){ return (state.labelSets || []).find(s => s.id === openSetId) || null; }
+function setStats(set){
+  const total = set.codes.length;
+  const done = set.codes.filter(c => c.status === 'validated').length;
+  return { total, done, pending: total - done, pct: total ? Math.round(done / total * 100) : 0 };
+}
+
+/* Uloží aktuální seznam QR kódů jako pojmenovanou sadu a hned ji otevře. */
+function saveLabelSet(){
+  if (denyIfReadOnly()) return;
+  if (!state.items.length){ toast('Nejprve vytvořte kódy (nahrajte CSV nebo ukázková data)', false); return; }
+  const inp = $('inpSetName');
+  const name = (inp.value || '').trim();
+  if (!name){ toast('Zadejte název sady', false); inp.focus(); return; }
+  const now = new Date().toISOString();
+  const set = {
+    id: uid('s'), name, createdAt: now, updatedAt: now,
+    labelSize: $('selLabelSize').value,
+    codes: state.items.map(it => ({
+      code: it.code, name: it.name, idx: it.idx,
+      group: it.group || '', years: it.years || '',
+      status: 'pending', validatedAt: null
+    }))
+  };
+  state.labelSets.push(set);
+  inp.value = '';
+  closeSetBanner();             // nová sada začíná s čistou hláškou
+  save();                       // uloží sadu a překreslí
+  openSetId = set.id;           // rovnou ji otevřeme k ověření
+  renderLabelSets();
+  toast(`Sada „${name}“ uložena (${set.codes.length} kódů)`);
+}
+
+function closeSetBanner(){ const b = $('setLastScan'); if (b){ b.classList.add('hidden'); b.innerHTML = ''; } }
+function toggleOpenSet(id){
+  closeSetBanner();                              // hláska patří k předchozí sadě
+  if (openSetId === id){ openSetId = null; renderLabelSets(); return; }
+  openSetId = id;
+  renderLabelSets();
+  const card = $('openSetCard');
+  if (card && !card.classList.contains('hidden')) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function deleteLabelSet(id){
+  if (denyIfReadOnly()) return;
+  const set = (state.labelSets || []).find(s => s.id === id); if (!set) return;
+  if (!confirm(`Smazat sadu „${set.name}“?`)) return;
+  state.labelSets = state.labelSets.filter(s => s.id !== id);
+  if (openSetId === id){ openSetId = null; try { stopSetScan(); } catch(e){} }
+  save(); toast('Sada smazána');
+}
+
+function resetSetValidation(){
+  if (denyIfReadOnly()) return;
+  const set = currentSet(); if (!set) return;
+  if (!confirm(`Vynulovat ověření sady „${set.name}“?`)) return;
+  set.codes.forEach(c => { c.status = 'pending'; c.validatedAt = null; });
+  set.updatedAt = new Date().toISOString();
+  const box = $('setLastScan'); if (box) box.classList.add('hidden');
+  save(); toast('Ověření vynulováno');
+}
+
+/* Export / import sady – přenos do telefonu, který pak skenuje kódy z obrazovky. */
+function exportLabelSet(id){
+  const set = (state.labelSets || []).find(s => s.id === id); if (!set) return;
+  set.updatedAt = new Date().toISOString();
+  const safe = (set.name || 'sada').replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').toLowerCase() || 'sada';
+  download(new Blob([JSON.stringify(set, null, 2)], { type: 'application/json' }), `sada-stitku-${safe}.json`);
+}
+/* Sloučí importovanou sadu s uloženou sadou stejného názvu – ověřené kódy aktualizují stav. */
+function mergeLabelSet(existing, incoming){
+  const byCode = {};
+  existing.codes.forEach(c => { byCode[String(c.code).toLowerCase()] = c; });
+  let updated = 0, added = 0;
+  incoming.codes.forEach(ic => {
+    const cur = byCode[String(ic.code).toLowerCase()];
+    if (!cur){ existing.codes.push(ic); added++; return; }
+    if (ic.status === 'validated' && cur.status !== 'validated'){
+      cur.status = 'validated';
+      cur.validatedAt = ic.validatedAt || new Date().toISOString();
+      updated++;
+    } else if (!cur.validatedAt && ic.validatedAt){ cur.validatedAt = ic.validatedAt; }
+  });
+  existing.updatedAt = new Date().toISOString();
+  return { updated, added };
+}
+function importLabelSet(file){
+  if (denyIfReadOnly()) return;
+  const r = new FileReader();
+  r.onload = () => {
+    let norm = null;
+    try { norm = normalizeSet(JSON.parse(r.result)); } catch(e){ norm = null; }
+    if (!norm){ toast('Neplatný soubor sady (JSON)', false); return; }
+    // stejný název = tatáž sada (typicky návrat z telefonu) → aktualizovat stavy, ne duplikovat
+    const existing = (state.labelSets || []).find(s => (s.name || '').toLowerCase() === norm.name.toLowerCase());
+    if (existing){
+      const res = mergeLabelSet(existing, norm);
+      closeSetBanner();
+      save();
+      openSetId = existing.id; renderLabelSets();
+      const s = setStats(existing);
+      toast(`Sada „${existing.name}“ aktualizována – ${s.done} z ${s.total} ověřeno` + (res.updated ? ` (+${res.updated})` : ''));
+    } else {
+      norm.id = uid('s');                    // nové ID, aby se nepřepsala existující sada
+      state.labelSets.push(norm);
+      closeSetBanner();
+      save();
+      openSetId = norm.id; renderLabelSets();
+      toast(`Sada „${norm.name}“ načtena (${norm.codes.length} kódů)`);
+    }
+  };
+  r.readAsText(file);
+}
+
 // ---------- scanning ----------
 function findByCode(code){ const c=(code||'').trim(); return state.items.find(i=>i.code.toLowerCase()===c.toLowerCase()); }
 function handleScan(raw){
+  if (denyIfReadOnly()) return;
   const code=(raw||'').trim(); if(!code) return;
   const it=findByCode(code);
   const box=$('lastScan'); box.classList.remove('hidden');
@@ -177,8 +356,9 @@ function handleScan(raw){
   pushHist(code,it.name,'found'); save(); beep(true);
   box.className='last-scan ok'; box.innerHTML=`✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(it.name)} #${it.idx} – spárováno!`;
 }
-function pushHist(code,name,result){ state.history.push({code,name,result,at:new Date().toISOString()}); if(state.history.length>500) state.history=state.history.slice(-500); try{localStorage.setItem(LS_KEY,JSON.stringify(state));}catch(e){} }
+function pushHist(code,name,result){ state.history.push({code,name,result,at:new Date().toISOString()}); if(state.history.length>500) state.history=state.history.slice(-500); try{localStorage.setItem(lsKey(activeCompanyId()),JSON.stringify(state));}catch(e){} }
 async function startScan(){
+  if (denyIfReadOnly()) return;
   if(!state.items.length){ toast('Nejprve nahrajte seznam majetku', false); switchTab('seznam'); return; }
   if(typeof Html5Qrcode==='undefined'){ toast('Knihovna skeneru se nenačetla (nutný internet při prvním otevření)', false); return; }
   try{
@@ -187,12 +367,65 @@ async function startScan(){
     const cfg={fps:10, qrbox:{width:260,height:260}, aspectRatio:1.0};
     let camId=null;
     if(cameras.length){ camId=cameras[camIndex%cameras.length].id; }
+    const box=$('reader'); if(box) box.classList.add('scanning');
     await html5Qr.start(camId?{deviceId:{exact:camId}}:{facingMode:'environment'}, cfg, handleScan, ()=>{});
     scanning=true; $('btnStartScan').disabled=true; $('btnStopScan').disabled=false; $('btnFlip').disabled=cameras.length<2;
     $('scanHint').textContent='Namiřte na QR štítek…';
-  }catch(e){ toast('Kameru se nepodařilo spustit: '+e, false); $('scanHint').textContent='Povolte přístup ke kameře a použijte HTTPS.'; }
+  }catch(e){ const b=$('reader'); if(b) b.classList.remove('scanning'); toast('Kameru se nepodařilo spustit: '+e, false); $('scanHint').textContent='Povolte přístup ke kameře a použijte HTTPS.'; }
 }
-async function stopScan(){ try{ if(html5Qr&&scanning) await html5Qr.stop(); }catch(e){} scanning=false; $('btnStartScan').disabled=false; $('btnStopScan').disabled=true; }
+async function stopScan(){ try{ if(html5Qr&&scanning) await html5Qr.stop(); }catch(e){} scanning=false; const r=$('reader'); if(r) r.classList.remove('scanning'); $('btnStartScan').disabled=false; $('btnStopScan').disabled=true; }
+
+// ---------- ověřování sady štítků skenerem ----------
+/* Označí kód z otevřené sady jako ověřený (a uloží čas). */
+function handleSetScan(raw){
+  if (denyIfReadOnly()) return;
+  const set = currentSet(); if (!set) return;
+  const code = (raw || '').trim(); if (!code) return;
+  const box = $('setLastScan'); box.classList.remove('hidden');
+  const entry = set.codes.find(c => c.code.toLowerCase() === code.toLowerCase());
+  if (!entry){
+    beep(false); box.className = 'last-scan err';
+    box.innerHTML = `❌ <b class="mono">${escapeHtml(code)}</b> – tento kód není v sadě „${escapeHtml(set.name)}“`;
+    return;
+  }
+  if (entry.status === 'validated'){
+    beep(true); box.className = 'last-scan dup';
+    box.innerHTML = `⚠️ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(entry.name)} – již ověřeno v ${new Date(entry.validatedAt).toLocaleTimeString('cs-CZ')}`;
+    return;
+  }
+  entry.status = 'validated';
+  entry.validatedAt = new Date().toISOString();
+  set.updatedAt = entry.validatedAt;
+  save();                                  // uloží stav a překreslí mřížku i průběh
+  beep(true);
+  const st = setStats(set);
+  box.className = 'last-scan ok';
+  box.innerHTML = `✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(entry.name)} #${entry.idx} – ověřeno (${st.done} / ${st.total})`;
+}
+
+async function startSetScan(){
+  if (denyIfReadOnly()) return;
+  const set = currentSet(); if (!set){ toast('Nejprve otevřete sadu štítků', false); return; }
+  if (typeof Html5Qrcode === 'undefined'){ toast('Knihovna skeneru se nenačetla (nutný internet při prvním otevření)', false); return; }
+  try{
+    await stopScan();                      // uvolní kameru záložky Inventura – jeden přístroj na kameru
+    if (!setQr) setQr = new Html5Qrcode('setReader');
+    const cfg = { fps: 10, qrbox: { width: 260, height: 260 }, aspectRatio: 1.0 };
+    let camId = null;
+    const cams = await Html5Qrcode.getCameras();
+    if (cams.length) camId = cams[0].id;
+    const sbox=$('setReader'); if(sbox) sbox.classList.add('scanning');
+    await setQr.start(camId ? { deviceId: { exact: camId } } : { facingMode: 'environment' }, cfg, handleSetScan, () => {});
+    setScanning = true; $('btnStartSetScan').disabled = true; $('btnStopSetScan').disabled = false;
+  }catch(e){ const b=$('setReader'); if(b) b.classList.remove('scanning'); toast('Kameru se nepodařilo spustit: ' + e, false); }
+}
+async function stopSetScan(){
+  try{ if(setQr && setScanning) await setQr.stop(); }catch(e){}
+  setScanning = false;
+  const b = $('btnStartSetScan'), s = $('btnStopSetScan'), rb = $('setReader');
+  if (rb) rb.classList.remove('scanning');
+  if (b) b.disabled = false; if (s) s.disabled = true;
+}
 
 // ---------- export/import ----------
 function exportCsv(){
@@ -202,28 +435,189 @@ function exportCsv(){
 }
 function download(blob,name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000); }
 
+/* Seznam uložených sad (řádek = název, průběh ověření, akce). */
+function renderLabelSets(){
+  const list = $('setList'); if (!list) return;
+  const canEdit = Auth.canEdit();
+  const sets = (state.labelSets || []).slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const empty = $('setEmpty'); if (empty) empty.style.display = sets.length ? 'none' : 'block';
+  list.innerHTML = '';
+  sets.forEach(s => {
+    const st = setStats(s), isOpen = s.id === openSetId;
+    const li = document.createElement('li');
+    li.className = 'set-row' + (isOpen ? ' is-open' : '');
+    li.innerHTML =
+      `<div class="set-row-main">
+         <b class="set-row-name">${escapeHtml(s.name)}</b>
+         <span class="muted small">vytvořeno ${new Date(s.createdAt).toLocaleString('cs-CZ')} · ${st.total} kódů · ${labelSizeName(s.labelSize)}</span>
+       </div>
+       <div class="set-row-meter">
+         <div class="set-row-bar"><i style="width:${st.pct}%"></i></div>
+         <span class="pill${st.done === st.total ? ' ok' : ''}">${st.done} / ${st.total} ověřeno</span>
+       </div>`;
+    const act = document.createElement('div'); act.className = 'set-row-actions';
+    const bOpen = document.createElement('button');
+    bOpen.className = 'btn small ' + (isOpen ? 'secondary' : 'primary');
+    bOpen.textContent = isOpen ? '▲ Zavřít' : '▶ Otevřít';
+    bOpen.title = isOpen ? 'Zavřít sadu' : 'Otevřít sadu k ověření';
+    bOpen.onclick = () => toggleOpenSet(s.id);
+    act.appendChild(bOpen);
+    const bExp = document.createElement('button');
+    bExp.className = 'btn small'; bExp.textContent = '⬇️ Export'; bExp.title = 'Uložit sadu do souboru (JSON)';
+    bExp.onclick = () => exportLabelSet(s.id);
+    act.appendChild(bExp);
+    if (canEdit){
+      const bDel = document.createElement('button');
+      bDel.className = 'btn small danger-ghost'; bDel.textContent = '🗑️ Smazat'; bDel.title = 'Smazat sadu';
+      bDel.onclick = () => deleteLabelSet(s.id);
+      act.appendChild(bDel);
+    }
+    li.appendChild(act);
+    list.appendChild(li);
+  });
+  renderOpenSet();
+}
+
+/* Otevřená sada: průběh, ovládání a mřížka QR kódů (velké = skenování z obrazovky). */
+function renderOpenSet(){
+  const card = $('openSetCard'); if (!card) return;
+  const set = currentSet();
+  if (!set){ card.classList.add('hidden'); const g = $('setGrid'); if (g) g.innerHTML = ''; return; }
+  card.classList.remove('hidden');
+  const st = setStats(set);
+  $('openSetName').textContent = set.name;
+  $('openSetMeta').textContent = `Uloženo ${new Date(set.createdAt).toLocaleString('cs-CZ')} · ${st.total} QR kódů · ${labelSizeName(set.labelSize)}`;
+  $('openSetProgressText').textContent = `${st.done} z ${st.total} kódů ověřeno • zbývá ${st.pending}`;
+  $('openSetPct').textContent = st.pct + '%';
+  $('openSetBar').style.width = st.pct + '%';
+
+  const onlyPending = $('chkSetOnlyPending').checked;
+  const big = $('chkSetBigQr').checked;
+  const grid = $('setGrid');
+  grid.className = 'qr-grid' + (big ? ' big' : '');
+  grid.innerHTML = '';
+  const shown = set.codes.filter(c => !onlyPending || c.status !== 'validated');
+  const LIMIT = 150;
+  const frag = document.createDocumentFragment();
+  shown.slice(0, LIMIT).forEach(c => {
+    const d = document.createElement('div');
+    d.className = 'qr-cell' + (c.status === 'validated' ? ' validated' : '');
+    d.innerHTML =
+      `<img src="${qrDataUrl(c.code, big ? 420 : 180)}" alt="${escapeHtml(c.code)}" />
+       <b class="mono">${escapeHtml(c.code)}</b>
+       <span class="qr-name">${escapeHtml(c.name)} #${c.idx}</span>
+       <span class="qr-state">${c.status === 'validated' ? '✅ ' + new Date(c.validatedAt).toLocaleString('cs-CZ') : '⏳ čeká'}</span>`;
+    frag.appendChild(d);
+  });
+  grid.appendChild(frag);
+  if (!shown.length){ const p = document.createElement('p'); p.className = 'muted center'; p.textContent = 'Všechny kódy v této sadě jsou ověřené. 🎉'; grid.appendChild(p); }
+  else if (shown.length > LIMIT){ const p = document.createElement('p'); p.className = 'muted center'; p.textContent = `Zobrazeno prvních ${LIMIT} z ${shown.length} kódů.`; grid.appendChild(p); }
+}
+
 // ---------- tabs ----------
-function switchTab(name){ document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name)); document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name)); if(name==='stitky') renderLabelsPreview(); }
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  // kamera může běžet jen v jedné záložce – při přepnutí ji uvolníme
+  if(name!=='inventura'){ try{ stopScan(); }catch(e){} }
+  if(name!=='stitky'){ try{ stopSetScan(); }catch(e){} }
+  if(name==='stitky'){ renderLabelsPreview(); renderLabelSets(); }
+}
+
+// ---------- přihlášení / oprávnění (UI) ----------
+const ROLE_LABELS = { admin: '👑 Admin', company: '🏢 Firma', guest: '👁️ Host (čtení)' };
+function companyNameOf(id){ const c = demoCompanyList().find(c => c.id === id); return c ? c.name : id; }
+
+function applySession(){
+  const s = Auth.current(); if(!s) return;
+  const roleEl = $('userRole');
+  roleEl.textContent = ROLE_LABELS[s.role] || s.role;
+  roleEl.className = 'role-badge role-' + s.role;
+  $('userName').textContent = s.name;
+  const av = $('userAvatar'); if(av) av.textContent = (s.name || '?').trim().charAt(0).toUpperCase();
+  const sel = $('companySelect');
+  sel.innerHTML = Auth.companyList().map(id => `<option value="${escapeHtml(id)}">${escapeHtml(companyNameOf(id))}</option>`).join('');
+  sel.value = s.currentCompany;
+  sel.disabled = Auth.companyList().length <= 1;
+  sel.title = sel.disabled ? companyNameOf(s.currentCompany) : 'Přepnout firmu';
+}
+/* Zviditelní/skryje ovládací prvky podle role. Prvky s data-gate="edit" jsou jen pro editory. */
+function applyPermissions(){
+  const canEdit = Auth.canEdit();
+  document.querySelectorAll('[data-gate="edit"]').forEach(el => {
+    if(el.tagName === 'INPUT') el.disabled = !canEdit;
+    else el.classList.toggle('hidden', !canEdit);
+  });
+  $('guestBanner').classList.toggle('hidden', !Auth.isGuest());
+}
+function showApp(){ $('loginView').classList.add('hidden'); $('appView').classList.remove('hidden'); document.documentElement.classList.add('has-session'); document.body.classList.add('authed'); }
+function showLogin(){ $('appView').classList.add('hidden'); $('loginView').classList.remove('hidden'); document.documentElement.classList.remove('has-session'); document.body.classList.remove('authed'); $('loginPass').value=''; }
+function enterApp(){ applySession(); load(); lastScannedId=null; openSetId=null; showApp(); applyPermissions(); render(); }
+function doLogout(){
+  try{ stopScan(); }catch(e){}
+  try{ stopSetScan(); }catch(e){}
+  Auth.logout();
+  state = emptyState(); lastScannedId = null; openSetId = null;
+  $('tbody').innerHTML=''; $('history').innerHTML=''; $('lastScan').classList.add('hidden');
+  $('loginError').classList.add('hidden'); $('loginError').textContent='';
+  showLogin(); $('loginUser').focus();
+}
+function switchCompany(id){
+  if(!Auth.switchCompany(id)){ toast('Na tuto firmu nemáte přístup', false); return; }
+  try{ stopScan(); }catch(e){}
+  try{ stopSetScan(); }catch(e){}
+  applySession(); load(); lastScannedId=null; openSetId=null; applyPermissions(); render();
+  toast('Firma: ' + companyNameOf(id));
+}
 
 // ---------- wiring ----------
 window.addEventListener('DOMContentLoaded',()=>{
-  load(); render();
   document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.tab));
   $('btnHelp').onclick=()=>$('dlgHelp').showModal();
   $('fileCsv').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ const rows=parseCsv(r.result); if(!rows.length){toast('CSV neobsahuje data',false);return;} generateFromRows(rows); }; r.readAsText(f,'UTF-8'); e.target.value=''; };
   $('btnDemo').onclick=()=>{ generateFromRows([{name:'stůl',count:3,years:'1',code:''},{name:'židle',count:5,years:'1',code:''},{name:'auto',count:2,years:'5',code:''},{name:'tiskárna',count:5,years:'2',code:''}]); };
-  $('btnGenerate').onclick=()=>{ if(!state.items.length){toast('Nejprve nahrajte CSV nebo ukázková data',false);return;} save(); toast('Kódy přepočítány'); };
-  $('btnClear').onclick=()=>{ if(confirm('Smazat všechna data?')){ state={items:[],lastId:0,history:[],updatedAt:null}; save(); } };
+  $('btnGenerate').onclick=()=>{ if(denyIfReadOnly())return; if(!state.items.length){toast('Nejprve nahrajte CSV nebo ukázková data',false);return;} save(); toast('Kódy přepočítány'); };
+  $('btnClear').onclick=()=>{ if(denyIfReadOnly())return; if(confirm('Smazat všechna data?')){ state=emptyState(); save(); } };
   $('search').oninput=render; $('filterStatus').onchange=render;
   $('chkOnlyPending').onchange=renderLabelsPreview;
   $('btnPrint').onclick=doPrint;
+
+  // sady štítků – uložení, otevření, ověření
+  $('btnSaveSet').onclick=saveLabelSet;
+  $('fileSetJson').onchange=e=>{ const f=e.target.files[0]; if(!f)return; importLabelSet(f); e.target.value=''; };
+  $('btnCloseSet').onclick=()=>{ try{ stopSetScan(); }catch(err){} openSetId=null; closeSetBanner(); renderLabelSets(); };
+  $('btnExportSet').onclick=()=>{ const s=currentSet(); if(s) exportLabelSet(s.id); else toast('Není otevřená žádná sada', false); };
+  $('btnResetSet').onclick=resetSetValidation;
+  $('btnStartSetScan').onclick=startSetScan;
+  $('btnStopSetScan').onclick=stopSetScan;
+  $('chkSetBigQr').onchange=renderOpenSet;
+  $('chkSetOnlyPending').onchange=renderOpenSet;
+  $('btnSetManual').onclick=()=>{ handleSetScan($('setManualCode').value); $('setManualCode').value=''; $('setManualCode').focus(); };
+  $('setManualCode').addEventListener('keydown',e=>{ if(e.key==='Enter'){ handleSetScan(e.target.value); e.target.value=''; } });
   $('btnExportCsv').onclick=exportCsv;
   $('btnExportJson').onclick=()=>download(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),'inventura-zaloha.json');
-  $('fileJson').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ try{ const s=JSON.parse(r.result); if(s.items){state=s;save();toast('Záloha obnovena');} }catch(err){toast('Neplatný JSON',false);} }; r.readAsText(f); e.target.value=''; };
+  $('fileJson').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ try{ const s=normalizeState(JSON.parse(r.result)); if(s){state=s;openSetId=null;save();toast('Záloha obnovena');} else toast('Neplatná záloha',false); }catch(err){toast('Neplatný JSON',false);} }; r.readAsText(f); e.target.value=''; };
   $('btnStartScan').onclick=startScan; $('btnStopScan').onclick=stopScan;
   $('btnFlip').onclick=async()=>{ camIndex++; await stopScan(); await startScan(); };
   $('btnManual').onclick=()=>{ handleScan($('manualCode').value); $('manualCode').value=''; $('manualCode').focus(); };
   $('manualCode').addEventListener('keydown',e=>{ if(e.key==='Enter'){ handleScan(e.target.value); e.target.value=''; } });
-  $('btnUndo').onclick=()=>{ if(!lastScannedId){toast('Nic k vrácení',false);return;} const it=state.items.find(i=>i.id===lastScannedId); if(it){it.status='pending';it.foundAt=null;save();toast('Poslední sken vrácen');} lastScannedId=null; };
-  $('btnResetScan').onclick=()=>{ if(confirm('Vynulovat výsledky inventury (kódy zůstanou)?')){ state.items.forEach(i=>{i.status='pending';i.foundAt=null;}); state.history=[]; save(); } };
+  $('btnUndo').onclick=()=>{ if(denyIfReadOnly())return; if(!lastScannedId){toast('Nic k vrácení',false);return;} const it=state.items.find(i=>i.id===lastScannedId); if(it){it.status='pending';it.foundAt=null;save();toast('Poslední sken vrácen');} lastScannedId=null; };
+  $('btnResetScan').onclick=()=>{ if(denyIfReadOnly())return; if(confirm('Vynulovat výsledky inventury (kódy zůstanou)?')){ state.items.forEach(i=>{i.status='pending';i.foundAt=null;}); state.history=[]; save(); } };
+
+  // přihlášení / odhlášení / přepnutí firmy
+  $('loginForm').onsubmit=e=>{
+    e.preventDefault();
+    const res = Auth.login($('loginUser').value, $('loginPass').value);
+    const err = $('loginError');
+    if(!res.ok){ err.textContent='❌ '+res.error; err.classList.remove('hidden'); return; }
+    err.textContent=''; err.classList.add('hidden');
+    $('loginUser').value=''; $('loginPass').value='';
+    enterApp();
+    toast('Přihlášen: '+Auth.current().name);
+  };
+  $('btnLogout').onclick=()=>{ if(confirm('Odhlásit se?')) doLogout(); };
+  $('companySelect').onchange=e=>switchCompany(e.target.value);
+
+  // start aplikace – obnovení relace nebo přihlášení
+  if(Auth.restore()){ enterApp(); } else { showLogin(); $('loginUser').focus(); }
 });
