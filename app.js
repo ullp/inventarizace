@@ -352,6 +352,25 @@ function mergeLabelSet(existing, incoming){
   existing.updatedAt = new Date().toISOString();
   return { updated, added };
 }
+/* Promítne ověřené kódy sady do inventury majetku.
+   Používá se po importu sady ze zařízení (typicky z telefonu): bez toho by sada
+   ukazovala „ověřeno“, ale záložka Seznam by o tom nevěděla a stav by se neshodoval.
+   Vrací počet nově označených kusů. */
+function projectSetIntoInventory(set){
+  if (!set || !Array.isArray(set.codes)) return 0;
+  let marked = 0;
+  set.codes.forEach(c => {
+    if (c.status !== 'validated') return;
+    const it = findByCode(c.code);
+    if (!it || it.status === 'found') return;      // neznámý kód nebo už označeno
+    it.status = 'found';
+    it.foundAt = c.validatedAt || new Date().toISOString();
+    state.history.push({ code: it.code, name: it.name, result: 'found', at: it.foundAt });
+    marked++;
+  });
+  if (state.history.length > 500) state.history = state.history.slice(-500);
+  return marked;
+}
 function importLabelSet(file){
   if (denyIfReadOnly()) return;
   const r = new FileReader();
@@ -363,18 +382,23 @@ function importLabelSet(file){
     const existing = (state.labelSets || []).find(s => (s.name || '').toLowerCase() === norm.name.toLowerCase());
     if (existing){
       const res = mergeLabelSet(existing, norm);
+      const marked = projectSetIntoInventory(existing);   // srovná i inventuru (Seznam)
       closeSetBanner();
       save();
       setOpenSet(existing.id); renderLabelSets();
       const s = setStats(existing);
-      toast(`Sada „${existing.name}“ aktualizována – ${s.done} z ${s.total} ověřeno` + (res.updated ? ` (+${res.updated})` : ''));
+      toast(`Sada „${existing.name}“ aktualizována – ${s.done} z ${s.total} ověřeno`
+        + (res.updated ? ` (+${res.updated})` : '')
+        + (marked ? `, v inventuře označeno ${marked} kusů` : ''));
     } else {
       norm.id = uid('s');                    // nové ID, aby se nepřepsala existující sada
       state.labelSets.push(norm);
+      const marked = projectSetIntoInventory(norm);       // srovná i inventuru (Seznam)
       closeSetBanner();
       save();
       setOpenSet(norm.id); renderLabelSets();
-      toast(`Sada „${norm.name}“ načtena (${norm.codes.length} kódů)`);
+      toast(`Sada „${norm.name}“ načtena (${norm.codes.length} kódů)`
+        + (marked ? ` – v inventuře označeno ${marked} kusů` : ''));
     }
   };
   r.readAsText(file);

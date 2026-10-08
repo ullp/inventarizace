@@ -101,7 +101,9 @@ Obě záložky tak vždy drží **stejný stav** a je jedno, na které z nich sk
 1. Na počítači **⬇️ Záloha JSON** (záložka *Přehled majetku*) – uloží majetek **i** všechny sady včetně stavu ověření.
 2. Na mobilu se přihlaste **stejným uživatelem** a v záložce *Inventura* klikněte **⬆️ Obnova ze zálohy (JSON)**.
 3. Aplikace obnoví majetek, sady i stav ověření a vrátí vás na stejnou záložku se stejnou otevřenou sadou – můžete rovnou **validovat**.
-4. Po validaci **⬇️ Export sady (JSON)** na mobilu a **⬆️ Import sady (JSON)** na počítači – stav ověření se sloučí do původní sady (podle názvu).
+4. Po validaci **⬇️ Export sady (JSON)** na mobilu a **⬆️ Import sady (JSON)** na počítači – sloučí se stav ověření **a také inventura majetku** (ověřené kusy se v *Seznamu* označí jako ✅ Nalezeno a zapíší se do *Posledních skenů*).
+
+> ⚠️ **Žádná automatická synchronizace neexistuje.** Každé zařízení má vlastní data (v prohlížeči). Co ověříte v telefonu, se v počítači projeví **až po importu** – a naopak. Pro celou inventuru najednou použijte **Zálohu JSON** (obousměrně); pro jednu sadu stačí **Export/Import sady (JSON)**. Opakovaný import stejného souboru nic nezdvojí – je bezpečné ho spustit vícekrát.
 
 ## Vzhled – business design 🎨
 
