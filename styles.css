@@ -522,6 +522,25 @@ footer .btn.ghost:hover{background:var(--surface-3)}
 .set-row-bar i{display:block;height:100%;border-radius:99px;background:var(--grad-ok);transition:width .35s ease}
 .set-row-actions{display:flex;gap:6px;flex-wrap:wrap}
 
+/* přehled sad v záložce Inventura (aby byl uložený seznam vidět i tam, kde se skenuje) */
+.active-set-now{
+  display:grid;gap:8px;padding:12px 14px;margin-bottom:8px;
+  background:var(--surface-2);border:1px solid var(--border);
+  border-left:3px solid var(--brand);border-radius:var(--r-sm);
+}
+.active-set-now b{font-size:15px;font-weight:800}
+.active-set-now .set-row-meter{min-width:0}
+.set-mini-list{list-style:none;margin:4px 0 0;padding:0;display:grid;gap:7px}
+.set-mini-row{
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  padding:9px 11px;background:var(--surface-2);
+  border:1px solid var(--border);border-left:3px solid var(--border-2);
+  border-radius:var(--r-sm);
+}
+.set-mini-row.is-open{border-left-color:var(--brand);background:#f6f5ff}
+.set-mini-name{font-weight:800;font-size:13.5px;flex:1;min-width:120px}
+.set-mini-row .pill{margin:0}
+
 .set-progress{margin:4px 0 12px}
 .set-progress .progress-info{margin-bottom:7px}
 #openSetBar{background:var(--grad-brand);height:100%;border-radius:99px;transition:width .35s ease}

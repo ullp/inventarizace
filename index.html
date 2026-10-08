@@ -216,9 +216,10 @@ tiskárna,5,2,</pre>
       <p class="muted">Uložením vznikne <b>pojmenovaná sada QR kódů</b> z aktuálního seznamu. Sadu můžete později znovu otevřít, zobrazit její QR kódy na obrazovce a <b>ověřit je skenerem</b> – každý ověřený kód si zapíše datum a čas.</p>
       <ol class="set-howto">
         <li>Vytvořte kódy v záložce <b>Seznam</b> a zde je uložte pod názvem.</li>
-        <li>Sadu přeneste do telefonu: <b>Export sady (JSON)</b> → v telefonu <b>Import sady (JSON)</b>.</li>
-        <li>V telefonu sadu otevřete a stiskněte <b>Spustit validaci</b>.</li>
-        <li>Namířte <b>kameru telefonu na QR kódy na obrazovce počítače</b> – každý kód se ihned označí jako ověřený.</li>
+        <li>Sadu přeneste do telefonu: buď <b>Záloha JSON</b> (celá data) nebo <b>Export sady (JSON)</b> → v telefonu <b>Import sady (JSON)</b>.</li>
+        <li>V telefonu sadu otevřete (zde nebo v záložce <b>Inventura</b>) – otevřená sada zůstává otevřená i po obnovení stránky.</li>
+        <li>Stiskněte <b>Spustit validaci</b> a namířte <b>kameru telefonu na QR kódy na obrazovce počítače</b> – každý kód se ihned označí jako ověřený.</li>
+        <li>Ověřovat můžete i v záložce <b>Inventura</b>: kamerou nebo ručním zadáním. Sken se zapíše do otevřené sady <b>i</b> do inventury majetku, takže obě záložky drží stejný stav.</li>
         <li>V telefonu <b>Export sady (JSON)</b>, v počítači <b>Import sady (JSON)</b> – stav ověření se v uložené sadě aktualizuje.</li>
       </ol>
       <div class="row wrap">
@@ -231,7 +232,7 @@ tiskárna,5,2,</pre>
         </label>
       </div>
       <ul id="setList" class="set-list"></ul>
-      <p id="setEmpty" class="muted center">Zatím žádná uložená sada. Vytvořte kódy v záložce <b>Seznam</b> a zde je pak uložte pod názvem.</p>
+      <p id="setEmpty" class="muted center">Zatím žádná uložená sada. Vytvořte kódy v záložce <b>Seznam</b> a zde je pak uložte pod názvem.<br><span class="small">Sady se ukládají do tohoto zařízení. Do mobilu je přenesete přes <b>Záloha JSON</b> (počítač) → <b>Obnova ze zálohy</b> (mobil).</span></p>
     </div>
 
     <!-- OTEVŘENÁ SADA — ověření QR kódů -->
@@ -286,6 +287,25 @@ tiskárna,5,2,</pre>
   <!-- INVENTURA -->
   <section id="tab-inventura" class="panel">
     <div id="guestBanner" class="guest-banner hidden">👁️ <b>Režim čtení</b> – jste přihlášeni jako host. Data můžete prohlížet, nikoliv upravovat.</div>
+
+    <!-- SADY ŠTÍTKŮ — co je uloženo a co se právě ověřuje -->
+    <div class="card">
+      <div class="card-head">
+        <span class="step-badge soft">🏷️</span>
+        <div class="card-head-txt">
+          <h3>Sady štítků</h3>
+          <p>Uložené sady a sada, kterou právě ověřujete</p>
+        </div>
+        <button id="btnActiveSetGo" class="btn small push hidden">Zobrazit QR kódy</button>
+      </div>
+      <div id="activeSetBox"></div>
+      <div class="row wrap">
+        <label class="btn secondary small" data-gate="edit">⬆️ Obnova ze zálohy (JSON)
+          <input type="file" id="fileJson2" accept=".json" hidden />
+        </label>
+      </div>
+    </div>
+
     <div class="card scan-card">
       <div class="card-head">
         <span class="step-badge">3</span>

@@ -78,6 +78,31 @@ Seznam uložených sad u každé položky zobrazuje **datum vytvoření, počet 
 
 > Sady jsou uložené **odděleně pro každou firmu** a přežijí zavření prohlížeče. V režimu čtení (**host**) lze sady otevřít a prohlížet, ale nelze je vytvářet, ověřovat, resetovat ani mazat.
 
+### Navigace a uchování stavu 🧭
+
+Aplikace si **pamatuje, kde jste skončili**, a to i přes obnovení stránky (F5) nebo zavření prohlížeče:
+
+- **Aktivní záložka** (Seznam / Štítky / Inventura) se ukládá do dat firmy – po přihlášení se vrátíte na stejné místo.
+- **Otevřená sada štítků** zůstává otevřená – po reloadu i po přihlášení na jiném zařízení (po obnově ze zálohy) je hned připravená k validaci.
+- Každá záložka si při přepnutí **překreslí svůj obsah z aktuálního stavu**, takže čísla, průběh ani mřížka QR nikdy neukazují zastaralá data.
+
+**Sady štítků jsou vidět i v záložce Inventura.** Karta *„Sady štítků“* tam ukazuje právě otevřenou sadu s průběhem (`4 / 18 ověřeno`) a seznam všech uložených sad s tlačítky **▶ Otevřít / ▲ Zavřít**. Tlačítko **Zobrazit QR kódy** přeskočí do záložky Štítky.
+
+**Sken se zapisuje na obě místa.** Když skenujete:
+
+| Kde skenujete | Co se zapíše |
+|---|---|
+| **Inventura** – kamera nebo ruční zadání | kus se označí jako **nalezený v inventuře** ✅ *a zároveň* se kód **ověří v otevřené sadě** |
+| **Štítky** – validace sady | kód se **ověří v sadě** ✅ *a zároveň* se kus označí jako **nalezený v inventuře** |
+
+Obě záložky tak vždy drží **stejný stav** a je jedno, na které z nich skenujete. Pokud byl kus v inventuře už nalezený, sken ho v sadě přesto ověří (jde o dvě různé kontroly) – aplikace to dá najevo hláškou *„v inventuře už bylo nalezeno“*.
+
+**Přenos na mobil (stejný uživatel).** Sady se ukládají do zařízení, takže se mezi počítačem a telefonem přenášejí souborem:
+1. Na počítači **⬇️ Záloha JSON** (záložka *Přehled majetku*) – uloží majetek **i** všechny sady včetně stavu ověření.
+2. Na mobilu se přihlaste **stejným uživatelem** a v záložce *Inventura* klikněte **⬆️ Obnova ze zálohy (JSON)**.
+3. Aplikace obnoví majetek, sady i stav ověření a vrátí vás na stejnou záložku se stejnou otevřenou sadou – můžete rovnou **validovat**.
+4. Po validaci **⬇️ Export sady (JSON)** na mobilu a **⬆️ Import sady (JSON)** na počítači – stav ověření se sloučí do původní sady (podle názvu).
+
 ## Vzhled – business design 🎨
 
 Aplikace má jednotnou vizuální identitu ve stylu moderního SaaS nástroje pro správu majetku.

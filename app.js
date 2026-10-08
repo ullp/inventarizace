@@ -2,12 +2,33 @@
    Data jsou oddělená podle firmy (companyId); přístup a oprávnění řídí Auth. */
 'use strict';
 const LS_PREFIX = 'iq-ctecka-v1';           // klíč dat jedné firmy: iq-ctecka-v1:<companyId>
-const emptyState = () => ({ items: [], lastId: 0, history: [], labelSets: [], updatedAt: null });
+const emptyState = () => ({ items: [], lastId: 0, history: [], labelSets: [], ui: { tab: 'seznam', openSetId: null }, updatedAt: null });
 let state = emptyState();
 let lastScannedId = null;
 let openSetId = null;            // která uložená sada štítků je právě otevřená k ověření
 let html5Qr = null, cameras = [], camIndex = 0, scanning = false;
 let setQr = null, setScanning = false;   // samostatný skener pro ověřování sad (záložka Štítky)
+
+/* ---------- stav prostředí (naposledy otevřená záložka a sada) ----------
+   Ukládá se do dat firmy, takže se po obnovení stránky i po přihlášení
+   v mobilu uživatel vrátí tam, kde skončil. */
+let activeTabName = 'seznam';
+function syncUi(){ state.ui = { tab: activeTabName, openSetId: openSetId || null }; }
+/* Zapíše stav prostředí bez překreslení – používá se při přepnutí záložky. */
+function persistUi(){ const cid = activeCompanyId(); if (!cid) return; syncUi(); try { localStorage.setItem(lsKey(cid), JSON.stringify(state)); } catch(e){} }
+/* Otevření/zavření sady – vždy se promítne i do uloženého stavu. */
+function setOpenSet(id){ openSetId = id || null; persistUi(); }
+function restoreUi(){ const u = state.ui || {}; activeTabName = u.tab || 'seznam'; openSetId = u.openSetId || null; }
+/* Označí kód v otevřené sadě jako ověřený (pokud tam je a ještě není). Vrací sadu, jinak null. */
+function validateSetCode(code, when){
+  const set = currentSet(); if (!set) return null;
+  const e = set.codes.find(c => c.code.toLowerCase() === String(code || '').trim().toLowerCase());
+  if (!e || e.status === 'validated') return null;
+  e.status = 'validated';
+  e.validatedAt = when || new Date().toISOString();
+  set.updatedAt = e.validatedAt;
+  return set;
+}
 
 // ---------- persistence (odděleně podle firmy) ----------
 function lsKey(companyId) { return `${LS_PREFIX}:${companyId}`; }
@@ -15,6 +36,7 @@ function activeCompanyId() { return Auth.company(); }
 function save() {
   const cid = activeCompanyId(); if (!cid) return;
   state.updatedAt = new Date().toISOString();
+  syncUi();
   try { localStorage.setItem(lsKey(cid), JSON.stringify(state)); } catch(e){}
   render();
 }
@@ -29,6 +51,9 @@ function normalizeState(s) {
   if (!Array.isArray(s.history)) s.history = [];
   if (!Array.isArray(s.labelSets)) s.labelSets = [];
   s.labelSets = s.labelSets.map(normalizeSet).filter(Boolean);
+  if (!s.ui || typeof s.ui !== 'object') s.ui = {};
+  s.ui.tab = (s.ui.tab === 'stitky' || s.ui.tab === 'inventura') ? s.ui.tab : 'seznam';
+  s.ui.openSetId = s.ui.openSetId ? String(s.ui.openSetId) : null;
   return s;
 }
 /* Načte data aktivní firmy; při prvním přihlášení je naplní ukázkovými daty. */
@@ -128,14 +153,17 @@ function qrDataUrl(text, size=128){
     return c.toDataURL('image/png');
   }catch(e){ return ''; }
 }
-function render(){
+/* Souhrnné ukazatele – hlavička i dlaždice v záložce Inventura. */
+function renderStats(){
   const total=state.items.length, found=state.items.filter(i=>i.status==='found').length;
   $('progressMini').textContent=`${found} / ${total}`;
   $('progressText').textContent= total?`${found} z ${total} kusů nalezeno • zbývá ${total-found}`:'Nenahrán žádný seznam';
   const pct=total?Math.round(found/total*100):0;
   $('progressPct').textContent=pct+'%'; $('progressBar').style.width=pct+'%';
   $('statTotal').textContent=total; $('statFound').textContent=found; $('statPending').textContent=total-found;
-  // table
+}
+/* Tabulka majetku – záložka Seznam. */
+function renderTable(){
   const rows=filtered(), tb=$('tbody'); tb.innerHTML='';
   $('emptyMsg').style.display=rows.length?'none':'block';
   const frag=document.createDocumentFragment();
@@ -153,7 +181,9 @@ function render(){
   });
   tb.appendChild(frag);
   if(rows.length>500) toast('Zobrazeno prvních 500 řádků, použijte filtr/hledání', true);
-  // history
+}
+/* Historie skenů – záložka Inventura. */
+function renderHistory(){
   const h=$('history'); h.innerHTML='';
   [...state.history].slice(-10).reverse().forEach(ev=>{
     const li=document.createElement('li');
@@ -161,8 +191,15 @@ function render(){
     li.innerHTML=`<b class="mono">${escapeHtml(ev.code)}</b> ${escapeHtml(ev.name||'')} <span class="muted">${new Date(ev.at).toLocaleTimeString('cs-CZ')}</span> – ${ev.result==='found'?'✅ nalezeno':ev.result==='duplicate'?'⚠️ duplicitní sken':'❌ neznámý kód'}`;
     h.appendChild(li);
   });
+}
+/* Vykreslí vše – používá se po každé změně dat. */
+function render(){
+  renderStats();
+  renderTable();
+  renderHistory();
   renderLabelsPreview();
   renderLabelSets();
+  renderActiveSet();
 }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function toggleItem(id){ if (denyIfReadOnly()) return; const it=state.items.find(i=>i.id===id); if(!it)return;
@@ -257,7 +294,7 @@ function saveLabelSet(){
   inp.value = '';
   closeSetBanner();             // nová sada začíná s čistou hláškou
   save();                       // uloží sadu a překreslí
-  openSetId = set.id;           // rovnou ji otevřeme k ověření
+  setOpenSet(set.id);           // rovnou ji otevřeme k ověření
   renderLabelSets();
   toast(`Sada „${name}“ uložena (${set.codes.length} kódů)`);
 }
@@ -265,8 +302,8 @@ function saveLabelSet(){
 function closeSetBanner(){ const b = $('setLastScan'); if (b){ b.classList.add('hidden'); b.innerHTML = ''; } }
 function toggleOpenSet(id){
   closeSetBanner();                              // hláska patří k předchozí sadě
-  if (openSetId === id){ openSetId = null; renderLabelSets(); return; }
-  openSetId = id;
+  if (openSetId === id){ setOpenSet(null); renderLabelSets(); return; }
+  setOpenSet(id);
   renderLabelSets();
   const card = $('openSetCard');
   if (card && !card.classList.contains('hidden')) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -277,7 +314,7 @@ function deleteLabelSet(id){
   const set = (state.labelSets || []).find(s => s.id === id); if (!set) return;
   if (!confirm(`Smazat sadu „${set.name}“?`)) return;
   state.labelSets = state.labelSets.filter(s => s.id !== id);
-  if (openSetId === id){ openSetId = null; try { stopSetScan(); } catch(e){} }
+  if (openSetId === id){ setOpenSet(null); try { stopSetScan(); } catch(e){} }
   save(); toast('Sada smazána');
 }
 
@@ -328,7 +365,7 @@ function importLabelSet(file){
       const res = mergeLabelSet(existing, norm);
       closeSetBanner();
       save();
-      openSetId = existing.id; renderLabelSets();
+      setOpenSet(existing.id); renderLabelSets();
       const s = setStats(existing);
       toast(`Sada „${existing.name}“ aktualizována – ${s.done} z ${s.total} ověřeno` + (res.updated ? ` (+${res.updated})` : ''));
     } else {
@@ -336,7 +373,7 @@ function importLabelSet(file){
       state.labelSets.push(norm);
       closeSetBanner();
       save();
-      openSetId = norm.id; renderLabelSets();
+      setOpenSet(norm.id); renderLabelSets();
       toast(`Sada „${norm.name}“ načtena (${norm.codes.length} kódů)`);
     }
   };
@@ -351,10 +388,30 @@ function handleScan(raw){
   const it=findByCode(code);
   const box=$('lastScan'); box.classList.remove('hidden');
   if(!it){ beep(false); box.className='last-scan err'; box.innerHTML=`❌ <b class="mono">${escapeHtml(code)}</b> – neznámý kód (není v seznamu)`; pushHist(code,'','unknown'); return; }
-  if(it.status==='found'){ beep(true); box.className='last-scan dup'; box.innerHTML=`⚠️ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(it.name)} – již naskenováno v ${new Date(it.foundAt).toLocaleTimeString('cs-CZ')}`; pushHist(code,it.name,'duplicate'); render(); return; }
+  if(it.status==='found'){
+    // Kus je v inventuře už nalezený, ale pokud běží ověřování sady štítků,
+    // sken ho v sadě přesto ověří – jde o dvě různé kontroly.
+    const dupSet = validateSetCode(code);
+    if (dupSet){
+      save(); beep(true);
+      const sd = setStats(dupSet);
+      box.className='last-scan ok';
+      box.innerHTML=`✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(it.name)} #${it.idx}`
+        + ` – ověřeno v sadě „${escapeHtml(dupSet.name)}“ (${sd.done} / ${sd.total})`
+        + ` <span class="muted">· v inventuře už bylo nalezeno</span>`;
+      return;
+    }
+    beep(true); box.className='last-scan dup';
+    box.innerHTML=`⚠️ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(it.name)} – již naskenováno v ${new Date(it.foundAt).toLocaleTimeString('cs-CZ')}`;
+    pushHist(code,it.name,'duplicate'); render(); return;
+  }
   it.status='found'; it.foundAt=new Date().toISOString(); lastScannedId=it.id;
+  const synced = validateSetCode(code, it.foundAt);   // promítne sken i do otevřené sady štítků
   pushHist(code,it.name,'found'); save(); beep(true);
-  box.className='last-scan ok'; box.innerHTML=`✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(it.name)} #${it.idx} – spárováno!`;
+  const sst = synced ? setStats(synced) : null;
+  box.className='last-scan ok';
+  box.innerHTML=`✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(it.name)} #${it.idx} – spárováno!`
+    + (sst ? ` <span class="muted">· sada „${escapeHtml(synced.name)}“ ${sst.done} / ${sst.total}</span>` : '');
 }
 function pushHist(code,name,result){ state.history.push({code,name,result,at:new Date().toISOString()}); if(state.history.length>500) state.history=state.history.slice(-500); try{localStorage.setItem(lsKey(activeCompanyId()),JSON.stringify(state));}catch(e){} }
 async function startScan(){
@@ -396,11 +453,19 @@ function handleSetScan(raw){
   entry.status = 'validated';
   entry.validatedAt = new Date().toISOString();
   set.updatedAt = entry.validatedAt;
+  // promítne ověření i do inventury (majetku), aby obě záložky ukazovaly totéž
+  const it = findByCode(code);
+  let marked = false;
+  if (it && it.status !== 'found'){
+    it.status = 'found'; it.foundAt = entry.validatedAt; lastScannedId = it.id;
+    pushHist(code, it.name, 'found'); marked = true;
+  }
   save();                                  // uloží stav a překreslí mřížku i průběh
   beep(true);
   const st = setStats(set);
   box.className = 'last-scan ok';
-  box.innerHTML = `✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(entry.name)} #${entry.idx} – ověřeno (${st.done} / ${st.total})`;
+  box.innerHTML = `✅ <b class="mono">${escapeHtml(code)}</b> ${escapeHtml(entry.name)} #${entry.idx} – ověřeno (${st.done} / ${st.total})`
+    + (marked ? ' <span class="muted">· označeno v inventuře</span>' : '');
 }
 
 async function startSetScan(){
@@ -428,6 +493,24 @@ async function stopSetScan(){
 }
 
 // ---------- export/import ----------
+/* Obnova celé zálohy (majetek + sady štítků + stav ověření) – přenos mezi zařízeními. */
+function importFullBackup(file){
+  if (denyIfReadOnly()) return;
+  const r = new FileReader();
+  r.onload = () => {
+    let next = null;
+    try { next = normalizeState(JSON.parse(r.result)); } catch(e){ next = null; }
+    if (!next){ toast('Neplatná záloha (JSON)', false); return; }
+    state = next;
+    restoreUi();
+    closeSetBanner();
+    save();
+    switchTab(activeTabName);
+    toast(`Záloha obnovena – ${state.items.length} kusů, ${(state.labelSets||[]).length} sad`);
+  };
+  r.readAsText(file);
+}
+
 function exportCsv(){
   const head='inventární kód;název;skupina;stav;čas nálezu;odpis let';
   const lines=state.items.map(i=>[i.code,i.name,i.group,i.status==='found'?'nalezeno':'nenalezeno',i.foundAt?new Date(i.foundAt).toLocaleString('cs-CZ'):'',i.years||''].map(v=>`"${(v||'').replace(/"/g,'""')}"`).join(';'));
@@ -476,6 +559,7 @@ function renderLabelSets(){
     list.appendChild(li);
   });
   renderOpenSet();
+  renderActiveSet();
 }
 
 /* Otevřená sada: průběh, ovládání a mřížka QR kódů (velké = skenování z obrazovky). */
@@ -514,6 +598,54 @@ function renderOpenSet(){
   else if (shown.length > LIMIT){ const p = document.createElement('p'); p.className = 'muted center'; p.textContent = `Zobrazeno prvních ${LIMIT} z ${shown.length} kódů.`; grid.appendChild(p); }
 }
 
+/* Přehled uložených sad v záložce Inventura.
+   Uživatel tak vidí uložený seznam i tam, kde skenuje, a může sadu rovnou otevřít. */
+function renderActiveSet(){
+  const box = $('activeSetBox'); if (!box) return;
+  const sets = (state.labelSets || []).slice().sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const open = currentSet();
+  /* otevřená sada je vypsaná zvlášť – v seznamu už ji neopakujeme */
+  const others = sets.filter(s => !open || s.id !== open.id);
+  let html = '';
+  if (open){
+    const st = setStats(open);
+    html += `<div class="active-set-now">
+        <b>${escapeHtml(open.name)}</b>
+        <span class="muted small">${st.total} kódů · ${labelSizeName(open.labelSize)}</span>
+        <div class="set-row-meter">
+          <div class="set-row-bar"><i style="width:${st.pct}%"></i></div>
+          <span class="pill${st.done===st.total?' ok':''}">${st.done} / ${st.total} ověřeno</span>
+        </div>
+        <div class="row wrap">
+          <button class="btn small secondary" data-openset="${escapeHtml(open.id)}">▲ Zavřít sadu</button>
+        </div>
+      </div>
+      <p class="muted small">Tato sada je otevřená. Skenujte kamerou níže nebo zadejte kód ručně – každý kód se zapíše do sady i do inventury.</p>`;
+  } else if (sets.length){
+    html += `<p class="muted small">Máte uložené sady. Otevřete některou a skenujte – průběh ověření se ukládá.</p>`;
+  } else {
+    html += `<p class="muted small">Zatím žádná uložená sada. Vytvořte ji v záložce <b>Štítky</b> (tlačítko „Uložit sadu štítků“).<br>Sady se ukládají <b>do tohoto zařízení</b> – z počítače je do mobilu přenesete přes <b>Záloha JSON</b> (počítač) → <b>Obnova ze zálohy</b> (mobil).</p>`;
+  }
+  if (others.length){
+    html += `<p class="muted small"><b>${open ? 'Další uložené sady' : 'Uložené sady'}</b></p>`
+      + '<ul class="set-mini-list">' + others.map(s => {
+      const st = setStats(s);
+      return `<li class="set-mini-row">
+        <span class="set-mini-name">${escapeHtml(s.name)}</span>
+        <span class="muted small">${st.total} kódů</span>
+        <span class="pill${st.done===st.total?' ok':''}">${st.done} / ${st.total}</span>
+        <button class="btn small primary" data-openset="${escapeHtml(s.id)}">▶ Otevřít</button>
+      </li>`;
+    }).join('') + '</ul>';
+  }
+  box.innerHTML = html;
+  box.querySelectorAll('[data-openset]').forEach(b => {
+    b.onclick = () => { toggleOpenSet(b.getAttribute('data-openset')); renderActiveSet(); };
+  });
+  const go = $('btnActiveSetGo');
+  if (go) go.classList.toggle('hidden', !open);
+}
+
 // ---------- tabs ----------
 function switchTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
@@ -521,7 +653,12 @@ function switchTab(name){
   // kamera může běžet jen v jedné záložce – při přepnutí ji uvolníme
   if(name!=='inventura'){ try{ stopScan(); }catch(e){} }
   if(name!=='stitky'){ try{ stopSetScan(); }catch(e){} }
-  if(name==='stitky'){ renderLabelsPreview(); renderLabelSets(); }
+  activeTabName = name;
+  // Každá záložka si při přepnutí překreslí svůj obsah, aby vždy ukazovala aktuální stav.
+  if(name==='seznam'){ renderStats(); renderTable(); renderLabelsPreview(); }
+  else if(name==='stitky'){ renderLabelsPreview(); renderLabelSets(); }
+  else if(name==='inventura'){ renderStats(); renderHistory(); renderActiveSet(); }
+  persistUi();
 }
 
 // ---------- přihlášení / oprávnění (UI) ----------
@@ -552,12 +689,12 @@ function applyPermissions(){
 }
 function showApp(){ $('loginView').classList.add('hidden'); $('appView').classList.remove('hidden'); document.documentElement.classList.add('has-session'); document.body.classList.add('authed'); }
 function showLogin(){ $('appView').classList.add('hidden'); $('loginView').classList.remove('hidden'); document.documentElement.classList.remove('has-session'); document.body.classList.remove('authed'); $('loginPass').value=''; }
-function enterApp(){ applySession(); load(); lastScannedId=null; openSetId=null; showApp(); applyPermissions(); render(); }
+function enterApp(){ applySession(); load(); lastScannedId=null; restoreUi(); showApp(); applyPermissions(); render(); switchTab(activeTabName); }
 function doLogout(){
   try{ stopScan(); }catch(e){}
   try{ stopSetScan(); }catch(e){}
   Auth.logout();
-  state = emptyState(); lastScannedId = null; openSetId = null;
+  state = emptyState(); lastScannedId = null; openSetId = null; activeTabName = 'seznam';
   $('tbody').innerHTML=''; $('history').innerHTML=''; $('lastScan').classList.add('hidden');
   $('loginError').classList.add('hidden'); $('loginError').textContent='';
   showLogin(); $('loginUser').focus();
@@ -566,7 +703,7 @@ function switchCompany(id){
   if(!Auth.switchCompany(id)){ toast('Na tuto firmu nemáte přístup', false); return; }
   try{ stopScan(); }catch(e){}
   try{ stopSetScan(); }catch(e){}
-  applySession(); load(); lastScannedId=null; openSetId=null; applyPermissions(); render();
+  applySession(); load(); lastScannedId=null; restoreUi(); applyPermissions(); render(); switchTab(activeTabName);
   toast('Firma: ' + companyNameOf(id));
 }
 
@@ -585,7 +722,8 @@ window.addEventListener('DOMContentLoaded',()=>{
   // sady štítků – uložení, otevření, ověření
   $('btnSaveSet').onclick=saveLabelSet;
   $('fileSetJson').onchange=e=>{ const f=e.target.files[0]; if(!f)return; importLabelSet(f); e.target.value=''; };
-  $('btnCloseSet').onclick=()=>{ try{ stopSetScan(); }catch(err){} openSetId=null; closeSetBanner(); renderLabelSets(); };
+  $('btnCloseSet').onclick=()=>{ try{ stopSetScan(); }catch(err){} setOpenSet(null); closeSetBanner(); renderLabelSets(); renderActiveSet(); };
+  $('btnActiveSetGo').onclick=()=>switchTab('stitky');
   $('btnExportSet').onclick=()=>{ const s=currentSet(); if(s) exportLabelSet(s.id); else toast('Není otevřená žádná sada', false); };
   $('btnResetSet').onclick=resetSetValidation;
   $('btnStartSetScan').onclick=startSetScan;
@@ -596,7 +734,8 @@ window.addEventListener('DOMContentLoaded',()=>{
   $('setManualCode').addEventListener('keydown',e=>{ if(e.key==='Enter'){ handleSetScan(e.target.value); e.target.value=''; } });
   $('btnExportCsv').onclick=exportCsv;
   $('btnExportJson').onclick=()=>download(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),'inventura-zaloha.json');
-  $('fileJson').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ try{ const s=normalizeState(JSON.parse(r.result)); if(s){state=s;openSetId=null;save();toast('Záloha obnovena');} else toast('Neplatná záloha',false); }catch(err){toast('Neplatný JSON',false);} }; r.readAsText(f); e.target.value=''; };
+  $('fileJson').onchange=e=>{ const f=e.target.files[0]; if(!f)return; importFullBackup(f); e.target.value=''; };
+  $('fileJson2').onchange=e=>{ const f=e.target.files[0]; if(!f)return; importFullBackup(f); e.target.value=''; };
   $('btnStartScan').onclick=startScan; $('btnStopScan').onclick=stopScan;
   $('btnFlip').onclick=async()=>{ camIndex++; await stopScan(); await startScan(); };
   $('btnManual').onclick=()=>{ handleScan($('manualCode').value); $('manualCode').value=''; $('manualCode').focus(); };
